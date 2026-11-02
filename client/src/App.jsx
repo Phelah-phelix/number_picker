@@ -256,6 +256,8 @@ function Member({ s, onChange, onLeave }) {
 
   // re-sync with the server on load
   useEffect(() => {
+    if (spinning) return undefined
+
     let active = true
     const syncMember = async () => {
       try {
@@ -276,7 +278,7 @@ function Member({ s, onChange, onLeave }) {
       active = false
       clearInterval(interval)
     }
-  }, [m.number, m.submitted, onChange, s])
+  }, [m.number, m.submitted, onChange, s, spinning])
 
   async function act(path) {
     setErr('')
@@ -298,7 +300,10 @@ function Member({ s, onChange, onLeave }) {
       setTick((t) => t + 1)
     } catch (e) {
       setErr(e.message)
-      if (path === '/draw') setSpinning(false)
+      if (path === '/draw') {
+        setSpinning(false)
+        setBusy(false)
+      }
     } finally {
       if (path !== '/draw') setBusy(false)
     }
@@ -325,14 +330,7 @@ function Member({ s, onChange, onLeave }) {
 
         {m.number === null ? (
           <>
-            {spinning ? (
-              <>
-                <Wheel size={s.group.size} target={spinTarget} onComplete={finishSpin} />
-                <p className="spin-caption" aria-live="polite">
-                  {spinTarget === null ? 'Finding your lucky number…' : 'And the number is…'}
-                </p>
-              </>
-            ) : (
+            {!spinning && (
               <>
                 <p className="draw-prompt">Ready to find your number?</p>
                 <button className="primary draw-button" disabled={busy} onClick={() => act('/draw')}>
@@ -359,6 +357,14 @@ function Member({ s, onChange, onLeave }) {
                 </div>
               </>
             )}
+          </>
+        )}
+        {m.number === null && spinning && (
+          <>
+            <Wheel size={s.group.size} target={spinTarget} onComplete={finishSpin} />
+            <p className="spin-caption" aria-live="polite">
+              {spinTarget === null ? 'Finding your lucky number…' : 'The wheel is slowing down…'}
+            </p>
           </>
         )}
         {err && <p className="err">{err}</p>}
