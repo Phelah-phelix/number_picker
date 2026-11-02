@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
 const API_BASE = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '')
 
@@ -20,11 +20,11 @@ const loadSession = () => {
 
 export default function App() {
   const [session, setSession] = useState(loadSession)
-  const save = (s) => {
+  const save = useCallback((s) => {
     if (s) localStorage.setItem(KEY, JSON.stringify(s))
     else localStorage.removeItem(KEY)
     setSession(s)
-  }
+  }, [])
 
   return (
     <main className="wrap">
@@ -36,7 +36,9 @@ export default function App() {
       </header>
 
       {!session && <Home onStart={save} />}
-      {session?.role === 'leader' && <Leader s={session} onLeave={() => save(null)} />}
+      {session?.role === 'leader' && (
+        <Leader s={session} onChange={save} onLeave={() => save(null)} />
+      )}
       {session?.role === 'member' && (
         <Member s={session} onChange={save} onLeave={() => save(null)} />
       )}
@@ -63,7 +65,12 @@ function Home({ onStart }) {
         onStart({ role: 'member', token, group: r.group, member: r.member })
       } else {
         const g = await api('/groups', { name: f.group, size: f.size })
-        onStart({ role: 'leader', token: g.token, group: { name: g.name, size: g.size } })
+        onStart({
+          role: 'leader',
+          token: g.token,
+          adminKey: g.adminKey,
+          group: { name: g.name, size: g.size },
+        })
       }
     } catch (e) {
       setErr(e.message)
@@ -140,9 +147,15 @@ function Home({ onStart }) {
 }
 
 /* ---------- Leader ---------- */
-function Leader({ s, onLeave }) {
+function Leader({ s, onChange, onLeave }) {
   const [copied, setCopied] = useState(false)
   const [copyError, setCopyError] = useState('')
+  const [participantName, setParticipantName] = useState('')
+  const [joinError, setJoinError] = useState('')
+  const [resetError, setResetError] = useState('')
+  const [resetMessage, setResetMessage] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [tick, setTick] = useState(0)
   const copy = async () => {
     setCopyError('')
     try {
@@ -153,6 +166,38 @@ function Leader({ s, onLeave }) {
       setCopyError('Could not copy the code. Please copy it manually.')
     }
   }
+
+  async function joinAsParticipant(event) {
+    event.preventDefault()
+    setJoinError('')
+    setBusy(true)
+    try {
+      const result = await api('/join', { name: participantName, token: s.token })
+      onChange({ ...s, member: result.member })
+    } catch (e) {
+      setJoinError(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function resetGroup() {
+    if (!confirm('Reset everyone’s selected numbers? All participants will be able to draw again.')) return
+    setResetError('')
+    setResetMessage('')
+    setBusy(true)
+    try {
+      const result = await api('/groups/reset', { token: s.token, adminKey: s.adminKey })
+      setResetMessage(`Reset complete. ${result.reset} participant${result.reset === 1 ? '' : 's'} can draw again.`)
+      setTick((value) => value + 1)
+      if (s.member) onChange({ ...s, member: { ...s.member, number: null, submitted: false } })
+    } catch (e) {
+      setResetError(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <>
       <section className="card center">
@@ -161,8 +206,39 @@ function Leader({ s, onLeave }) {
         <div className="token mono">{s.token}</div>
         <button className="ghost" onClick={copy}>{copied ? 'Copied ✓' : 'Copy token'}</button>
         {copyError && <p className="err" role="alert">{copyError}</p>}
+        <div className="leader-actions">
+          <button className="ghost" disabled={busy || !s.adminKey} onClick={resetGroup}>
+            Reset everyone’s numbers
+          </button>
+          {!s.member && (
+            <form className="leader-join" onSubmit={joinAsParticipant}>
+              <label htmlFor="leader-participant-name">Join as a participant</label>
+              <input
+                id="leader-participant-name"
+                value={participantName}
+                onChange={(event) => setParticipantName(event.target.value)}
+                placeholder="Your name"
+                autoComplete="name"
+                required
+              />
+              {joinError && <p className="err" role="alert">{joinError}</p>}
+              <button className="primary" disabled={busy}>Join and choose a number</button>
+            </form>
+          )}
+          {!s.adminKey && <p className="err">Reset isn’t available for this older group. Create a new group to enable it.</p>}
+          {resetError && <p className="err" role="alert">{resetError}</p>}
+          {resetMessage && <p className="ok" role="status">{resetMessage}</p>}
+        </div>
       </section>
-      <Board token={s.token} tick={0} />
+      {s.member ? (
+        <Member
+          s={{ ...s, role: 'member' }}
+          onChange={(memberSession) => onChange({ ...s, member: memberSession.member })}
+          onLeave={() => onChange({ ...s, member: undefined })}
+        />
+      ) : (
+        <Board token={s.token} tick={tick} />
+      )}
       <button className="link" onClick={onLeave}>Leave / create another group</button>
     </>
   )
@@ -180,10 +256,27 @@ function Member({ s, onChange, onLeave }) {
 
   // re-sync with the server on load
   useEffect(() => {
-    api('/join', { name: s.member.name, token: s.token })
-      .then((r) => setM(r.member))
-      .catch(() => {})
-  }, [s.member.name, s.token])
+    let active = true
+    const syncMember = async () => {
+      try {
+        const result = await api('/join', { name: s.member.name, token: s.token })
+        if (!active) return
+        if (result.member.number !== m.number || result.member.submitted !== m.submitted) {
+          setM(result.member)
+          onChange({ ...s, member: result.member })
+          setTick((value) => value + 1)
+        }
+      } catch (e) {
+        if (active) setErr(e.message)
+      }
+    }
+    syncMember()
+    const interval = setInterval(syncMember, 4000)
+    return () => {
+      active = false
+      clearInterval(interval)
+    }
+  }, [m.number, m.submitted, onChange, s])
 
   async function act(path) {
     setErr('')
@@ -257,14 +350,14 @@ function Member({ s, onChange, onLeave }) {
             {m.submitted ? (
               <p className="ok">🔒 Locked in. This is your final number.</p>
             ) : (
-              <div className="actions">
-                <button className="ghost" disabled={busy || m.redosLeft === 0} onClick={() => act('/redo')}>
-                  Redo ({m.redosLeft} left)
-                </button>
+              <>
+                <p className="muted">Your number is selected. Submit to lock it in.</p>
+                <div className="actions">
                 <button className="primary" disabled={busy} onClick={lockIn}>
                   Submit
                 </button>
-              </div>
+                </div>
+              </>
             )}
           </>
         )}

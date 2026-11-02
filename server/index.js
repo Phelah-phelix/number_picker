@@ -4,13 +4,14 @@ const cors = require('cors');
 const crypto = require('crypto');
 const pool = require('./db');
 
-const MAX_REDOS = 3;
 const app = express();
 app.use(cors(process.env.CLIENT_URL ? { origin: process.env.CLIENT_URL } : undefined));
 app.use(express.json());
 
 // ---------- helpers ----------
 const makeToken = () => crypto.randomBytes(3).toString('hex').toUpperCase();
+const makeAdminKey = () => crypto.randomBytes(32).toString('hex');
+const hashAdminKey = (key) => crypto.createHash('sha256').update(key).digest('hex');
 const httpErr = (status, message) => Object.assign(new Error(message), { status });
 
 const publicMember = (m) => ({
@@ -18,7 +19,6 @@ const publicMember = (m) => ({
   name: m.name,
   number: m.number,
   submitted: m.submitted,
-  redosLeft: MAX_REDOS - m.redos_used,
 });
 
 const handle = (fn) => async (req, res) => {
@@ -60,6 +60,20 @@ const withMember = (req, fn) =>
     return fn(db, g, rows[0]);
   });
 
+const withLeader = (req, fn) =>
+  withGroup(req.body.token, async (db, g) => {
+    const key = req.body.adminKey;
+    if (typeof key !== 'string' || !g.admin_key_hash) {
+      throw httpErr(403, 'Leader authorization is required');
+    }
+    const expected = Buffer.from(g.admin_key_hash, 'hex');
+    const provided = Buffer.from(hashAdminKey(key), 'hex');
+    if (expected.length !== provided.length || !crypto.timingSafeEqual(expected, provided)) {
+      throw httpErr(403, 'Leader authorization is required');
+    }
+    return fn(db, g);
+  });
+
 async function pickFree(db, g) {
   const { rows } = await db.query(
     'SELECT number FROM members WHERE group_id = $1 AND number IS NOT NULL',
@@ -83,19 +97,30 @@ app.post('/api/groups', handle(async (req) => {
   if (!name || !(size >= 2 && size <= 100)) {
     throw httpErr(400, 'Group name and size (2-100) are required');
   }
+  const adminKey = makeAdminKey();
   for (let i = 0; i < 5; i++) {
     try {
       const { rows } = await pool.query(
-        'INSERT INTO groups (name, token, size) VALUES ($1, $2, $3) RETURNING id, name, token, size',
-        [name, makeToken(), size]
+        'INSERT INTO groups (name, token, size, admin_key_hash) VALUES ($1, $2, $3, $4) RETURNING id, name, token, size',
+        [name, makeToken(), size, hashAdminKey(adminKey)]
       );
-      return rows[0];
+      return { ...rows[0], adminKey };
     } catch (e) {
       if (e.code !== '23505') throw e;
     }
   }
   throw httpErr(500, 'Could not generate a token, try again');
 }));
+
+app.post('/api/groups/reset', handle((req) =>
+  withLeader(req, async (db, g) => {
+    const result = await db.query(
+      'UPDATE members SET number = NULL, submitted = FALSE, redos_used = 0 WHERE group_id = $1',
+      [g.id]
+    );
+    return { reset: result.rowCount };
+  })
+));
 
 app.post('/api/join', handle(async (req) => {
   const name = (req.body.name || '').trim().replace(/\s+/g, ' ');
@@ -121,7 +146,7 @@ app.post('/api/join', handle(async (req) => {
 app.post('/api/draw', handle((req) =>
   withMember(req, async (db, g, m) => {
     if (m.submitted) throw httpErr(409, 'You already submitted your number');
-    if (m.number !== null) throw httpErr(409, 'You already drew a number, use redo');
+    if (m.number !== null) throw httpErr(409, 'You already drew a number. Redrawing is not allowed.');
     const n = await pickFree(db, g);
     if (n === null) throw httpErr(409, 'No numbers left');
     const { rows } = await db.query('UPDATE members SET number = $1 WHERE id = $2 RETURNING *', [n, m.id]);
@@ -130,17 +155,8 @@ app.post('/api/draw', handle((req) =>
 ));
 
 app.post('/api/redo', handle((req) =>
-  withMember(req, async (db, g, m) => {
-    if (m.submitted) throw httpErr(409, 'Submitted numbers cannot be changed');
-    if (m.number === null) throw httpErr(409, 'Draw a number first');
-    if (m.redos_used >= MAX_REDOS) throw httpErr(409, 'No redos left');
-    const n = await pickFree(db, g);
-    if (n === null) throw httpErr(409, 'No other number is available');
-    const { rows } = await db.query(
-      'UPDATE members SET number = $1, redos_used = redos_used + 1 WHERE id = $2 RETURNING *',
-      [n, m.id]
-    );
-    return publicMember(rows[0]);
+  withMember(req, async () => {
+    throw httpErr(409, 'Redrawing is not allowed. Your number can only be selected once.');
   })
 ));
 

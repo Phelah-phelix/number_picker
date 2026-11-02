@@ -10,7 +10,7 @@ If a database password has been shared in chat, rotate it in Neon before deployi
 
 ### 2. Create the database tables
 
-In the Neon SQL Editor, run the statements from [`server/schema.sql`](./server/schema.sql).
+In the Neon SQL Editor, run the statements from [`server/schema.sql`](./server/schema.sql). If the tables already exist, run the file again to add the leader-reset authorization column before deploying the updated API.
 
 ### 3. Deploy the API
 
@@ -39,3 +39,5 @@ The Vite environment variable is applied at build time. Redeploy the static site
 After the static site is deployed, set the API service's `CLIENT_URL` environment variable to the exact public Render Static Site URL, with no trailing slash. This enables CORS for that site. Redeploy the API after setting it.
 
 The Vite proxy in [`client/vite.config.js`](./client/vite.config.js) is only for local development.
+
+Group leaders can reset all participant selections. The reset authorization key is returned only when a group is created and stored in the leader's browser session; keep it private. Groups created before adding this feature do not have a reset key and must be recreated to use leader resets.
