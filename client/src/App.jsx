@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 
+const API_BASE = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '')
+
 async function api(path, body) {
-  const res = await fetch('/api' + path, body ? {
+  const res = await fetch(API_BASE + '/api' + path, body ? {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),

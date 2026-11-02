@@ -6,7 +6,7 @@ const pool = require('./db');
 
 const MAX_REDOS = 3;
 const app = express();
-app.use(cors());
+app.use(cors(process.env.CLIENT_URL ? { origin: process.env.CLIENT_URL } : undefined));
 app.use(express.json());
 
 // ---------- helpers ----------
